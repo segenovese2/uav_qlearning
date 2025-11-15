@@ -80,6 +80,9 @@ class UAVEnv(gym.Env):
         if render_mode == "human":
             self._init_pygame()
 
+        # Precompute maximum achievable sum-rate across grid
+        self.max_possible_sum_rate = self._compute_max_sum_rate()
+
     # -------------------------
     # World generation helpers
     # -------------------------
@@ -321,12 +324,7 @@ class UAVEnv(gym.Env):
     # -------------------------
     # Communication-quality wrapper
     # -------------------------
-    def _get_communication_quality_for_pos(self, pos):
-        """
-        Compute a normalized communication quality in [0,1] for a given pos.
-        This is a convenience measure (not the reward) based on the same channel model.
-        """
-        # compute sum-rate and normalize by an estimate of max achievable rate
+    def _compute_sum_rate_at_pos(self, pos, deterministic=True) -> float:
         sum_rate = 0.0
         for user in self.users:
             d_k = np.linalg.norm(np.array(pos) - np.array(user))
@@ -334,16 +332,32 @@ class UAVEnv(gym.Env):
             pathloss_dist = (d_k_eff ** (-self.alpha)) if d_k_eff > 0 else 1.0
             los = self._has_los(pos, np.array(user))
             beta = 1.0 if los else self.beta_shadow
-            # use deterministic fading for quality estimate
-            L_k = pathloss_dist * 1.0 * beta
+            fading_linear = 1.0 if deterministic else (10 ** (np.random.rayleigh(scale=1.0) / 10.0))
+            L_k = pathloss_dist * fading_linear * beta
             R_k = math.log2(1.0 + (self.P / self.N) * L_k)
             sum_rate += R_k
+        return sum_rate
 
-        # Normalize: very rough normalization by a heuristic maximum (tunable)
-        # With P/N large and small distances, sum_rate can be up to a few bits/s/Hz.
-        # Choose normalization constant to squash values into [0,1].
-        norm_const = 10.0  # empirical; tune if needed
-        quality = float(min(1.0, sum_rate / norm_const))
+    def _compute_max_sum_rate(self) -> float:
+        best = 1e-9
+        for x in range(self.grid_size):
+            for y in range(self.grid_size):
+                pos = np.array([x, y])
+                # deterministic evaluation
+                sr = self._compute_sum_rate_at_pos(pos, deterministic=True)
+                if sr > best:
+                    best = sr
+        # Avoid zero
+        return float(max(best, 1e-9))
+
+    def _get_communication_quality_for_pos(self, pos):
+        """
+        Compute a normalized communication quality in [0,1] for a given pos.
+        This is a convenience measure (not the reward) based on the same channel model.
+        """
+        # compute sum-rate and normalize by an estimate of max achievable rate
+        sum_rate = self._compute_sum_rate_at_pos(pos, deterministic=True)
+        quality = float(min(1.0, sum_rate / self.max_possible_sum_rate))
         return quality
 
     def _get_communication_quality(self):
