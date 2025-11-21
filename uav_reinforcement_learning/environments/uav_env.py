@@ -240,11 +240,20 @@ class UAVEnv(gym.Env):
         # compute sum-rate
         sum_rate = 0.0
         fading_factors = []  # optional debugging
+
+        # if UAV is directly on user, reduce comm quality
+        at_user_position = list(self.current_pos) in self.users
+
         for user in self.users:
             d_k = np.linalg.norm(np.array(self.current_pos) - np.array(user))
             # distance in continuous units: add altitude effect? In paper they use constant H.
             # We treat grid positions as planar -> use d_k + 1e-6 to avoid divide by zero
             d_k_eff = math.sqrt((d_k ** 2) + 1e-6)
+
+            # If UAV is at this user's position, enforce minimum distance
+            if at_user_position and list(self.current_pos) == user:
+                d_k_eff = max(d_k_eff, 3.0)  # treat as if 3 units away (realistic antenna separation)
+
             # pathloss power term (d^-alpha)
             pathloss_dist = (d_k_eff ** (-self.alpha)) if d_k_eff > 0 else 1.0
 
@@ -272,24 +281,48 @@ class UAVEnv(gym.Env):
             fading_factors.append((float(fading_linear), float(beta), float(d_k_eff)))
             sum_rate += R_k
 
-        # small step penalty to encourage shorter/efficient trajectories (paper mentions energy concerns)
+        # small step penalty to encourage shorter/efficient trajectories
         step_penalty = -0.01
-
-        # Optional extra penalty if outside grid (shouldn't happen due to bounds above)
-        outside_penalty = 0.0
 
         # Compose reward: main term is sum_rate (as in paper).
         # Keep reward scale manageable for learning by scaling factor if needed (expose if you want).
-        reward = float(sum_rate) + step_penalty + outside_penalty
+        reward = float(sum_rate) + step_penalty
 
-        # Termination: in this formulation we do not terminate early based solely on rate;
-        # mission termination handled by max_steps/truncation. Keep terminated False here.
+        midpoint = (np.array(self.users[0]) + np.array(self.users[1])) / 2.0
+        dist_to_midpoint = np.linalg.norm(self.current_pos - midpoint)
+
+        midpoint_guidance = max(0.0, 5.0 - dist_to_midpoint)
+        reward += midpoint_guidance * 0.5
+
+        if dist_to_midpoint < 2.0:
+            reward += 3.0
+
+        visited_midpoint = any(
+            np.linalg.norm(np.array(pos) - midpoint) < 2.0
+            for pos in self.trajectory
+        )
+
+        # Check if returned to start
+        returned_to_start = np.array_equal(self.current_pos, self.start_pos)
+
+        # Big bonus for midpoint and returning
+        if visited_midpoint and returned_to_start:
+            reward += 20.0
+        elif visited_midpoint and returned_to_start == False:
+            dist_to_start = np.linalg.norm(self.current_pos - self.start_pos)
+            return_guidance = max(0.0, 5.0 - dist_to_start) * 0.3
+            reward += return_guidance
+
+        # penalty for sitting on user
+        if list(self.current_pos) in self.users:
+            reward -= 5.0
+
         terminated = False
 
         return reward, terminated
 
     def _calculate_final_reward(self):
-        """Final bonus similar to your previous implementation — averages sum-rate over trajectory."""
+        """averages sum-rate over trajectory."""
         # compute average sum-rate along trajectory
         if len(self.trajectory) == 0:
             return 0.0
@@ -310,14 +343,14 @@ class UAVEnv(gym.Env):
                 sum_rate_pos += R_k
             total_sum_rate += sum_rate_pos
         avg_sum_rate = total_sum_rate / len(self.trajectory)
+        bonus = avg_sum_rate * 2.0
 
-        # give final bonus proportional to average sum-rate and small bonus for visiting users region
-        visited_users = any(
-            (np.linalg.norm(np.array(pos) - np.array(self.users[0])) < 8) or
-            (np.linalg.norm(np.array(pos) - np.array(self.users[1])) < 8)
+        # Check if trajectory visited midpoint
+        midpoint = (np.array(self.users[0]) + np.array(self.users[1])) / 2.0
+        visited_midpoint = any(
+            np.linalg.norm(np.array(pos) - midpoint) < 2.0
             for pos in self.trajectory
         )
-        bonus = avg_sum_rate * 2.0 + (5.0 if visited_users else 0.0)
 
         return float(bonus)
 
@@ -364,7 +397,7 @@ class UAVEnv(gym.Env):
         return self._get_communication_quality_for_pos(self.current_pos)
 
     # -------------------------
-    # Visualization (unchanged, bottom-left (0,0))
+    # Visualization (bottom-left (0,0))
     # -------------------------
     def render(self):
         if self.render_mode != "human" or self.screen is None:
