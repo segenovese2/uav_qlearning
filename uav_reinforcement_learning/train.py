@@ -3,7 +3,6 @@ import numpy as np
 import pygame
 import json
 
-from utils.plotter import plot_training_stats
 from environments.uav_env import UAVEnv
 
 # ============================
@@ -11,10 +10,13 @@ from environments.uav_env import UAVEnv
 # ============================
 from agents.q_learning_agent import QLearningAgent as Agent
 #from agents.dqn_agent import DQNAgent as Agent
+#from agents.PPO_agent import PPOAgent as Agent
+#rom agents.SAC_agent import SACAgent as Agent
+#from agents.A2C_agent import A2CAgent as Agent
 # ============================
 
 
-def train(agent_cls, num_episodes=15000, show_training=True):
+def train(agent_cls, num_episodes=20000, show_training=True):
     render_mode = "human" if show_training else None
     env = UAVEnv(grid_size=15, render_mode=render_mode)
 
@@ -32,15 +34,29 @@ def train(agent_cls, num_episodes=15000, show_training=True):
 
     for episode in range(num_episodes):
         state, _ = env.reset()
+
+        if hasattr(agent, "reset"):
+            agent.reset()
+
         terminated = False
         truncated = False
         total_reward = 0
 
         while not (terminated or truncated):
-            action = agent.choose_action(state)
+            action = agent.choose_action(state, training=True)
             next_state, reward, terminated, truncated, info = env.step(action)
 
-            agent.update(state, action, reward, next_state, terminated)
+            agent_name = agent.__class__.__name__
+
+            if agent_name == "PPOAgent":
+                agent.store_experience(reward, terminated or truncated)
+            elif agent_name == "SACAgent":
+                agent.store_experience(state, action, reward, next_state, terminated or truncated)
+                agent.update()
+            elif agent_name == "A2CAgent":
+                agent.update(state, action, reward, next_state, terminated or truncated)
+            else:
+                agent.update(state, action, reward, next_state, terminated or truncated)
 
             state = next_state
             total_reward += reward
@@ -51,8 +67,11 @@ def train(agent_cls, num_episodes=15000, show_training=True):
                     if event.type == pygame.QUIT:
                         env.close()
                         return agent
-                    
-        # Epsilon decal (Q-learning)
+
+        if agent.__class__.__name__ == 'PPOAgent':
+            agent.update()
+
+        # Epsilon decay (Q-learning + DQN only)
         if hasattr(agent, "decay"):
             agent.decay()
 
@@ -61,7 +80,8 @@ def train(agent_cls, num_episodes=15000, show_training=True):
         epsilons.append(getattr(agent, "epsilon", None))
 
         if (episode+1) % 100 == 0:
-            print(f"Episode {episode+1}/{num_episodes} | Reward={total_reward:.2f} | ε={agent.epsilon:.3f}")
+            epsilon_str = f"| ε={agent.epsilon:.3f}" if hasattr(agent, "epsilon") else ""
+            print(f"Episode {episode+1}/{num_episodes} | Reward={total_reward:.2f} | {epsilon_str}")
 
     env.close()
 
@@ -79,7 +99,10 @@ def train(agent_cls, num_episodes=15000, show_training=True):
     print("\nSaved training_stats.json and training_rewards.npy")
 
     # Save trained model
-    model_path = "trained_q_table.npy"
+    if agent.__class__.__name__ == "QLearningAgent":
+        model_path = "trained_q_table.npy"
+    else:
+        model_path = "trained_agent.pt"
 
     if hasattr(agent, "save"):
         agent.save(model_path)
