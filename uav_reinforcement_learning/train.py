@@ -11,6 +11,8 @@ from environments.uav_env import UAVEnv
 from agents.q_learning_agent import QLearningAgent as Agent
 #from agents.dqn_agent import DQNAgent as Agent
 #from agents.PPO_agent import PPOAgent as Agent
+
+# NOT IMPLEMENTED YET
 #rom agents.SAC_agent import SACAgent as Agent
 #from agents.A2C_agent import A2CAgent as Agent
 # ============================
@@ -22,11 +24,16 @@ def train(agent_cls, num_episodes=20000, show_training=True):
 
     state, _ = env.reset()
 
-    # Create agent
-    agent = agent_cls(
-        state_size=len(state),
-        action_size=env.action_space.n
-    )
+    if agent_cls.__name__ == "QLearningAgent":
+        agent = agent_cls(
+            observation_space = env.observation_space,
+            action_space = env.action_space
+        )
+    else:
+        agent = agent_cls(
+            state_size = env.observation_space.shape[0],
+            action_size = env.action_space.n
+        )
 
     # Storage for training stats
     episode_rewards = []
@@ -114,3 +121,4 @@ def train(agent_cls, num_episodes=20000, show_training=True):
 
 if __name__ == "__main__":
     train(Agent, show_training=True)
+
